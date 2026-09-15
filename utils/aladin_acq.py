@@ -263,10 +263,14 @@ class AladinAcquisitionManager:
         discount_rate: float = 0.10,
         lib_code: str = "",
         owned_isbns_set: set = None,
-        auto_exclude_owned: bool = True
+        auto_exclude_owned: bool = True,
+        target_loan_map: dict = None,
+        trend_loan_map: dict = None,
+        eui_weights: dict = None,
+        target_label: str = ""
     ) -> pd.DataFrame:
         """
-        알라딘 수집 도서를 도서관 수서 정책에 따라 정제, 병렬 소장여부 조회, 예산 계산 후 DataFrame 반환
+        알라딘 수집 도서를 도서관 수서 정책 및 v2.0 이용기대율(EUI) 엔진에 따라 정제, 소장여부 조회, EUI 점수 산출 후 DataFrame 반환
         """
         if exclude_keywords is None:
             exclude_keywords = self.DEFAULT_EXCLUDE_KEYWORDS
@@ -274,6 +278,12 @@ class AladinAcquisitionManager:
             exclude_isbns = set()
         if owned_isbns_set is None:
             owned_isbns_set = set()
+        if target_loan_map is None:
+            target_loan_map = {}
+        if trend_loan_map is None:
+            trend_loan_map = {}
+        if eui_weights is None:
+            eui_weights = {"sales": 0.35, "loans": 0.25, "target": 0.25, "trend": 0.15}
 
         processed = []
         seen_isbns = set()
@@ -337,9 +347,56 @@ class AladinAcquisitionManager:
             sub_kdc = item.get("subInfo", {}).get("kdc", "")
             kdc_code, kdc_name = self.infer_kdc(category_name, title, sub_kdc)
 
+            # --- v2.0 이용기대율 (EUI: Expected Utilization Index) 점수 계산 ---
+            norm_sales = min(sales_point / 10000.0, 1.0) * 100.0
+            
+            # 타겟층 대출 정보
+            target_info = target_loan_map.get(isbn13, {})
+            target_rank = target_info.get("ranking", 0)
+            target_loan_cnt = target_info.get("loan_count", 0)
+            target_score = max(0.0, (1.0 - (target_rank / 300.0)) * 100.0) if target_rank > 0 else 0.0
+
+            # 트렌드 급상승 정보
+            trend_info = trend_loan_map.get(isbn13, {})
+            trend_rank = trend_info.get("ranking", 0)
+            trend_diff = trend_info.get("difference", 0)
+            trend_score = max(0.0, (1.0 - (trend_rank / 200.0)) * 100.0) if trend_rank > 0 else 0.0
+
+            # 일반 대출건수 점수
+            norm_loans = min(target_loan_cnt / 100.0, 1.0) * 100.0 if target_loan_cnt > 0 else (norm_sales * 0.5)
+
+            # 최종 EUI 복합 점수
+            w_sales = eui_weights.get("sales", 0.35)
+            w_loans = eui_weights.get("loans", 0.25)
+            w_target = eui_weights.get("target", 0.25)
+            w_trend = eui_weights.get("trend", 0.15)
+
+            eui_score = round(
+                (w_sales * norm_sales) + 
+                (w_loans * norm_loans) + 
+                (w_target * target_score) + 
+                (w_trend * trend_score), 
+                1
+            )
+
+            # 추천 사유 뱃지/태그 생성
+            badges = []
+            if trend_rank > 0:
+                badges.append("🔥 급상승")
+            if target_rank > 0:
+                badges.append(f"👨‍👩‍👧 {target_label or '타겟'}추천")
+            if sales_point >= 5000 or target_loan_cnt >= 50:
+                badges.append("📚 인기대출")
+            if not badges:
+                badges.append("📖 일반추천")
+
+            recommend_tag = " | ".join(badges)
+
             processed.append({
                 "선정": not is_owned,
                 "소장여부": "소장중" if is_owned else "미소장",
+                "EUI점수": eui_score,
+                "추천사유": recommend_tag,
                 "KDC코드": kdc_code,
                 "KDC분류": kdc_name,
                 "도서명": title,
@@ -356,7 +413,7 @@ class AladinAcquisitionManager:
 
         df = pd.DataFrame(processed)
         if not df.empty:
-            df = df.sort_values(by="판매지수", ascending=False).reset_index(drop=True)
+            df = df.sort_values(by=["EUI점수", "판매지수"], ascending=[False, False]).reset_index(drop=True)
 
         return df
 
@@ -446,7 +503,7 @@ class AladinAcquisitionManager:
         selected_df = df[df["선정"] == True].copy() if "선정" in df.columns else df.copy()
 
         cols_to_export = [
-            "KDC코드", "KDC분류", "도서명", "저자", "출판사", "출간일", 
+            "EUI점수", "추천사유", "KDC코드", "KDC분류", "도서명", "저자", "출판사", "출간일", 
             "정가", "추정실구입가", "소장여부", "ISBN13", "판매지수", "카테고리"
         ]
         available_cols = [c for c in cols_to_export if c in selected_df.columns]
