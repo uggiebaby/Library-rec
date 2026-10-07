@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
 import os
@@ -234,9 +234,24 @@ with st.sidebar:
     total_budget_limit = st.number_input("수서 상한 예산액 (원, 0=무제한)", min_value=0, value=1000000, step=100000)
 
     st.markdown("---")
-    st.subheader("📅 출간일 조건")
-    days_ago = st.selectbox("출간 시점 필터", options=[30, 60, 90, 180, 365], index=1, format_func=lambda x: f"최근 {x}일 이내 출간")
-    min_pub_date = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+    st.subheader("📅 출간일 조건 (범위 확장)")
+    pub_date_options = {
+        60: "최근 60일 이내 출간",
+        90: "최근 90일 이내 출간",
+        180: "최근 180일 이내 출간",
+        365: "최근 365일 (1년) 이내 출간",
+        730: "최근 2년 (730일) 이내 출간",
+        1095: "최근 3년 (1095일) 이내 출간",
+        0: "전체 기간 (출간일 제한 없음)"
+    }
+    days_ago = st.selectbox("출간 시점 필터", options=list(pub_date_options.keys()), index=3, format_func=lambda x: pub_date_options[x])
+    min_pub_date = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d") if days_ago > 0 else None
+
+    allow_steady_sellers = st.checkbox(
+        "⭐ 365일 지나도 판매율/대출율 우수 도서 예외 포함",
+        value=True,
+        help="체크 시 지정된 출간일 기간이 지나더라도 판매지수가 높거나 대출 상위/트렌드 도서인 경우 '⭐ 스테디셀러' 뱃지와 함께 수서 추천에 포함합니다."
+    )
 
     with st.expander("🚫 제외 키워드 & ISBN 관리", expanded=False):
         exclude_kw_str = st.text_area(
@@ -302,7 +317,8 @@ if fetch_btn or (st.session_state.raw_books and st.session_state.processed_df.em
                 target_loan_map=target_loan_map,
                 trend_loan_map=trend_loan_map,
                 eui_weights=eui_weights,
-                target_label=target_label_str
+                target_label=target_label_str,
+                allow_steady_sellers=allow_steady_sellers
             )
             
             # 5. 예산 제한 적용

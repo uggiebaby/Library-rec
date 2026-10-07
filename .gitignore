@@ -21,3 +21,4 @@ data/*.json
 temp_extract/
 *.zip
 Library-rec/
+Push_To_GitHub.*

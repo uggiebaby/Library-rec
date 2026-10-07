@@ -263,11 +263,12 @@ class AladinAcquisitionManager:
         discount_rate: float = 0.10,
         lib_code: str = "",
         owned_isbns_set: set = None,
-        auto_exclude_owned: bool = True,
+        allow_exclude_owned: bool = True,
         target_loan_map: dict = None,
         trend_loan_map: dict = None,
         eui_weights: dict = None,
-        target_label: str = ""
+        target_label: str = "",
+        allow_steady_sellers: bool = True
     ) -> pd.DataFrame:
         """
         알라딘 수집 도서를 도서관 수서 정책 및 v2.0 이용기대율(EUI) 엔진에 따라 정제, 소장여부 조회, EUI 점수 산출 후 DataFrame 반환
@@ -298,6 +299,7 @@ class AladinAcquisitionManager:
             stock_status = item.get("stockStatus", "")
             category_name = item.get("categoryName", "")
             pub_date = item.get("pubDate", "")
+            sales_point = int(item.get("salesPoint", 0))
 
             if "품절" in stock_status or "절판" in stock_status:
                 continue
@@ -306,11 +308,22 @@ class AladinAcquisitionManager:
             if any(kw in full_text for kw in exclude_keywords if kw.strip()):
                 continue
 
+            # --- 출간일 조건 체크 (단, 판매지수/대출율 우수 도서는 365일 지나도 예외 포함) ---
+            is_high_perf = (
+                sales_point >= 2500 or
+                isbn13 in target_loan_map or
+                isbn13 in trend_loan_map
+            )
+
+            is_older_than_limit = False
             if min_pub_date and pub_date and pub_date < min_pub_date:
-                continue
+                if allow_steady_sellers and is_high_perf:
+                    is_older_than_limit = True
+                else:
+                    continue
 
             seen_isbns.add(isbn13)
-            candidate_items.append((isbn13, item))
+            candidate_items.append((isbn13, item, is_older_than_limit))
 
         ownership_map = {}
         if self.info_naru_key and lib_code:
@@ -320,17 +333,17 @@ class AladinAcquisitionManager:
                 return isbn, self.check_naru_book_exist(lib_code, isbn)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-                futures = [executor.submit(check_item, isbn) for isbn, _ in candidate_items]
+                futures = [executor.submit(check_item, isbn) for isbn, _, _ in candidate_items]
                 for future in concurrent.futures.as_completed(futures):
                     isbn, is_owned = future.result()
                     ownership_map[isbn] = is_owned
 
             self._save_cache(self.owned_cache, self.owned_cache_path)
         else:
-            for isbn, _ in candidate_items:
+            for isbn, _, _ in candidate_items:
                 ownership_map[isbn] = isbn in owned_isbns_set
 
-        for isbn13, item in candidate_items:
+        for isbn13, item, is_older_than_limit in candidate_items:
             is_owned = ownership_map.get(isbn13, False)
             if is_owned and auto_exclude_owned:
                 continue
@@ -381,6 +394,8 @@ class AladinAcquisitionManager:
 
             # 추천 사유 뱃지/태그 생성
             badges = []
+            if is_older_than_limit:
+                badges.append("⭐ 스테디셀러")
             if trend_rank > 0:
                 badges.append("🔥 급상승")
             if target_rank > 0:
