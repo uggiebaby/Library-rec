@@ -263,7 +263,7 @@ class AladinAcquisitionManager:
         discount_rate: float = 0.10,
         lib_code: str = "",
         owned_isbns_set: set = None,
-        allow_exclude_owned: bool = True,
+        auto_exclude_owned: bool = True,
         target_loan_map: dict = None,
         trend_loan_map: dict = None,
         eui_weights: dict = None,
