@@ -7,11 +7,12 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from utils.aladin_acq import AladinAcquisitionManager
 from utils.yes24_acq import Yes24AcquisitionManager
+from utils.api_handler import LibraryAPIHandler
 
 # 환경변수 로드 및 기본 설정
 load_dotenv()
 st.set_page_config(
-    page_title="도서관 스마트 신간 수서 지원 시스템 (YES24 / 알라딘)",
+    page_title="도서관 스마트 신간 수서 지원 시스템 v2.0 (YES24 / 알라딘 & 정보나루 EUI)",
     page_icon="📖",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -102,7 +103,7 @@ if "owned_isbns" not in st.session_state:
 if "active_source" not in st.session_state:
     st.session_state.active_source = "YES24"
 
-# 세션에 이전 "인기도점수" 컬럼이 남아있다면 즉시 "판매지수"로 이름 변경
+# 세션에 이전 "인기도점수" 컬럼이 남아있다면 "판매지수"로 자동 변환
 if not st.session_state.processed_df.empty and "인기도점수" in st.session_state.processed_df.columns:
     st.session_state.processed_df = st.session_state.processed_df.rename(columns={"인기도점수": "판매지수"})
 
@@ -115,14 +116,14 @@ default_lib_code = os.getenv("DEFAULT_LIB_CODE", "141005")
 # Header
 st.markdown("""
 <div class="main-header">
-    <h1>📖 도서관 스마트 신간 수서 지원 시스템</h1>
-    <p>YES24 Open API 및 도서관 정보나루 소장 여부를 연동하여 신간도서 추천, 소장 중복 제어, KDC 정밀 분류 및 발주 엑셀을 자동 생성합니다.</p>
+    <h1>📖 도서관 스마트 신간 수서 지원 시스템 v2.0</h1>
+    <p>YES24 / 알라딘 서지 데이터 및 도서관 정보나루 빅데이터(연령/성별 대출, 급상승 트렌드)를 결합하여 이용기대율(EUI) 기반 최적 수서를 지원합니다.</p>
 </div>
 """, unsafe_allow_html=True)
 
 # --- 사이드바 설정 ---
 with st.sidebar:
-    st.title("⚙️ 수서 설정 대시보드")
+    st.title("⚙️ 수서 설정 대시보드 (v2.0)")
     
     # 1. 수서 데이터 소스 선택
     selected_source = st.radio(
@@ -166,7 +167,45 @@ with st.sidebar:
         }
         default_checked_cats = ["소설/시/희곡", "에세이", "유아", "아동 (어린이)"]
 
-    # 3. 소장 도서 설정
+    api_handler = LibraryAPIHandler(naru_key, aladin_key)
+
+    # 3. v2.0 지능형 이용기대율(EUI) 수서 설정
+    with st.expander("🎯 v2.0 지능형 이용기대율(EUI) 수서 설정", expanded=True):
+        st.markdown("##### 1. 타겟층 대출 빅데이터 분석")
+        target_age_label = st.selectbox(
+            "주 타겟 연령대",
+            options=list(LibraryAPIHandler.AGE_OPTIONS.keys()),
+            index=6,
+            help="선택한 연령대의 공공도서관 전국 대출 상위 도서에 우선 가중치를 부여합니다."
+        )
+        target_gender_label = st.selectbox(
+            "주 타겟 성별",
+            options=list(LibraryAPIHandler.GENDER_OPTIONS.keys()),
+            index=0,
+            help="선택한 성별의 대출 상위 패턴을 분석합니다."
+        )
+
+        st.markdown("##### 2. 급상승 트렌드 반영")
+        use_hot_trend = st.checkbox(
+            "🔥 공공도서관 급상승 트렌드 반영",
+            value=True,
+            help="최근 대출 순위가 급증한 공공도서관 라이징 도서에 트렌드 점수를 부여합니다."
+        )
+
+        with st.expander("🧮 이용기대율(EUI) 가중치 비율 조정", expanded=False):
+            w_sales = st.slider("서점 판매지수 가중치", 0.0, 1.0, 0.35, 0.05)
+            w_loans = st.slider("전국 대출건수 가중치", 0.0, 1.0, 0.25, 0.05)
+            w_target = st.slider("타겟층 대출가중치", 0.0, 1.0, 0.25, 0.05)
+            w_trend = st.slider("급상승 트렌드가중치", 0.0, 1.0, 0.15, 0.05)
+
+            eui_weights = {
+                "sales": w_sales,
+                "loans": w_loans,
+                "target": w_target,
+                "trend": w_trend
+            }
+
+    # 4. 소장 도서 설정
     with st.expander("🏛️ 우리 도서관 소장 설정", expanded=True):
         lib_code = st.text_input("나의 도서관 코드 (정보나루)", value=default_lib_code, help="도서관 정보나루 도서관 코드 (예: 141005)")
         auto_exclude_owned = st.checkbox("소장 중인 도서 자동 제외", value=True, help="정보나루 API 또는 업로드된 파일로 이미 소장 중으로 확인된 도서를 발주 후보에서 자동 제어합니다.")
@@ -188,15 +227,14 @@ with st.sidebar:
         if st.session_state.owned_isbns:
             st.caption(f"💾 등록된 소장 ISBN: {len(st.session_state.owned_isbns):,}권")
 
-    # 4. 수서 검색 대상
-    st.subheader(f"🎯 수서 검색 대상 ({current_source_name})")
+    # 5. 수서 검색 대상
+    st.subheader(f"📚 수서 검색 대상 ({current_source_name})")
     selected_query_type = st.selectbox(
         "수서 도서 수집 유형",
         options=list(query_types.keys()),
         format_func=lambda x: query_types[x]
     )
     
-    # 카테고리 복수 선택 UI
     with st.expander("📚 수서 분야 선택 (체크박스 복수 선택)", expanded=True):
         all_categories = [c for c in available_categories.keys() if c != "전체 분야"]
         
@@ -223,11 +261,10 @@ with st.sidebar:
             st.warning("⚠️ 선택된 분야가 없어 '전체 분야'로 수집됩니다.")
             selected_category_names = ["전체 분야"]
 
-    # 선택된 카테고리 ID 리스트 변환
     selected_category_ids = [available_categories[cat] for cat in selected_category_names]
     max_fetch_count = st.slider("수집 대상 도서 수", min_value=50, max_value=500, value=200, step=50)
 
-    # 5. 예산 및 수서 조건
+    # 6. 예산 및 수서 조건
     st.markdown("---")
     st.subheader("💰 예산 및 수서 조건")
     
@@ -239,11 +276,17 @@ with st.sidebar:
         
     total_budget_limit = st.number_input("수서 상한 예산액 (원, 0=무제한)", min_value=0, value=1000000, step=100000)
 
-    # 6. 출간일 조건
+    # 7. 출간일 조건
     st.markdown("---")
     st.subheader("📅 출간일 조건")
-    days_ago = st.selectbox("출간 시점 필터", options=[30, 60, 90, 180, 365, 0], index=1, format_func=lambda x: f"최근 {x}일 이내 출간" if x > 0 else "제한 없음 (전체)")
+    days_ago = st.selectbox("출간 시점 필터", options=[30, 60, 90, 180, 365, 0], index=4, format_func=lambda x: f"최근 {x}일 이내 출간" if x > 0 else "제한 없음 (전체)")
     min_pub_date = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d") if days_ago > 0 else ""
+    
+    allow_steady_sellers = st.checkbox(
+        "⭐ 판매지수/대출율 우수 도서는 365일 지나도 포함 (스테디셀러 허용)",
+        value=True,
+        help="출간일 필터가 지나도 대출 순위나 판매지수가 압도적으로 높은 고품질 도서는 수서 후보에서 탈락하지 않도록 보호합니다."
+    )
 
     with st.expander("🚫 제외 키워드 & ISBN 관리", expanded=False):
         exclude_kw_str = st.text_area(
@@ -257,9 +300,8 @@ with st.sidebar:
         exclude_isbns = set(manager.clean_isbn(i) for i in exclude_isbn_str.splitlines() if i.strip())
 
     st.markdown("---")
-    fetch_btn = st.button(f"🚀 {current_source_name} 도서 수집 및 분석", type="primary", use_container_width=True)
+    fetch_btn = st.button(f"🚀 {current_source_name} v2.0 지능형 도서 수집 및 EUI 분석", type="primary", use_container_width=True)
 
-    # 캐시 초기화 버튼
     if st.button("🔄 캐시 초기화 및 새로고침", use_container_width=True):
         st.cache_data.clear()
         st.session_state.processed_df = pd.DataFrame()
@@ -276,7 +318,9 @@ if fetch_btn:
     else:
         start_time = time.time()
         cat_disp_count = len(selected_category_names)
-        with st.spinner(f"📡 {current_source_name} API {cat_disp_count}개 분야 병렬 수집 및 정보나루 소장 여부 확인 중..."):
+        
+        with st.status(f"🚀 {current_source_name} & 정보나루 v2.0 수서 파이프라인 가동 중...", expanded=True) as status:
+            st.write(f"📡 1단계: {current_source_name} API {cat_disp_count}개 분야 병렬 수집 중...")
             if is_yes24:
                 raw_books = cached_fetch_yes24_books_multi(
                     yes24_key=yes24_key,
@@ -293,8 +337,22 @@ if fetch_btn:
                 )
             st.session_state.raw_books = raw_books
             st.session_state.active_source = current_source_name
-            
-            # 데이터 정제 및 필터링 & 소장여부 병렬 검사
+
+            # 정보나루 타겟층 대출 및 트렌드 데이터 수집
+            target_loan_map = {}
+            trend_loan_map = {}
+            if naru_key:
+                st.write(f"👥 2단계: 도서관정보나루 '{target_age_label} / {target_gender_label}' 대출 빅데이터 연동...")
+                target_code = LibraryAPIHandler.AGE_OPTIONS.get(target_age_label, "20")
+                gender_code = LibraryAPIHandler.GENDER_OPTIONS.get(target_gender_label, "0")
+                target_loan_map = api_handler.fetch_target_popular_books(age_code=target_code, gender_code=gender_code)
+
+                if use_hot_trend:
+                    st.write("🔥 3단계: 최근 공공도서관 대출 급상승(라이징) 트렌드 분석...")
+                    trend_loan_map = api_handler.fetch_hot_trend_books()
+
+            st.write("⚖️ 4단계: 이용기대율(EUI) 스코어링 및 소장 여부 병렬 검증...")
+            target_label_str = f"{target_age_label[:3]}대 {target_gender_label[:1]}"
             df = manager.process_acquisition_candidates(
                 raw_books=raw_books,
                 exclude_keywords=exclude_keywords,
@@ -303,10 +361,16 @@ if fetch_btn:
                 discount_rate=discount_rate_pct / 100.0,
                 lib_code=lib_code,
                 owned_isbns_set=st.session_state.owned_isbns,
-                auto_exclude_owned=auto_exclude_owned
+                auto_exclude_owned=auto_exclude_owned,
+                target_loan_map=target_loan_map,
+                trend_loan_map=trend_loan_map,
+                eui_weights=eui_weights,
+                target_label=target_label_str,
+                allow_steady_sellers=allow_steady_sellers
             )
-            
+
             # 예산 제한 적용
+            st.write("💰 5단계: 예산 및 목표 권수 최적 캡 적용...")
             df = manager.apply_budget_cap(
                 df,
                 max_budget=total_budget_limit,
@@ -314,15 +378,17 @@ if fetch_btn:
             )
             
             st.session_state.processed_df = df
-            elapsed = time.time() - start_time
-            cat_desc = ", ".join(selected_category_names[:2]) + (f" 외 {len(selected_category_names)-2}개" if len(selected_category_names) > 2 else "")
-            st.toast(f"⚡ [{current_source_name} - {cat_desc}] 총 {len(df)}권 수서 후보 정제 완료! ({elapsed:.2f}초 소요)", icon="🚀")
+            status.update(label=f"✅ {current_source_name} v2.0 수서 분석 완료!", state="complete", expanded=False)
+
+        elapsed = time.time() - start_time
+        cat_desc = ", ".join(selected_category_names[:2]) + (f" 외 {len(selected_category_names)-2}개" if len(selected_category_names) > 2 else "")
+        st.toast(f"⚡ [{current_source_name} - {cat_desc}] 총 {len(df)}권 v2.0 EUI 수서 정제 완료! ({elapsed:.2f}초)", icon="🚀")
 
 # --- 메인 화면 렌더링 ---
 df = st.session_state.processed_df
 
 if df.empty:
-    st.info(f"👈 왼쪽 사이드바에서 수서 데이터 소스(현재: **{current_source_name}**) 및 조건 선택 후 **[🚀 {current_source_name} 도서 수집 및 분석]** 버튼을 클릭하세요.")
+    st.info(f"👈 왼쪽 사이드바에서 수서 데이터 소스(현재: **{current_source_name}**) 및 EUI 조건을 설정한 후 **[🚀 {current_source_name} v2.0 지능형 도서 수집 및 EUI 분석]** 버튼을 클릭하세요.")
 else:
     # 1. 요약 메트릭
     selected_mask = df["선정"] == True
@@ -334,30 +400,33 @@ else:
     total_list_price = selected_df["정가"].sum() if not selected_df.empty else 0
     total_est_price = selected_df["추정실구입가"].sum() if not selected_df.empty else 0
     budget_usage = (total_est_price / total_budget_limit * 100) if total_budget_limit > 0 else 0
-    
-    m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
+    avg_eui = selected_df["EUI점수"].mean() if ("EUI점수" in selected_df.columns and not selected_df.empty) else 0.0
+
+    m_col1, m_col2, m_col3, m_col4, m_col5, m_col6 = st.columns(6)
     with m_col1:
         st.markdown(f'<div class="metric-card"><div class="metric-label">총 후보 도서</div><div class="metric-value">{total_candidates:,}권</div></div>', unsafe_allow_html=True)
     with m_col2:
         st.markdown(f'<div class="metric-card"><div class="metric-label">최종 수서 선정</div><div class="metric-value" style="color:#2563EB;">{selected_count:,}권</div></div>', unsafe_allow_html=True)
     with m_col3:
-        st.markdown(f'<div class="metric-card"><div class="metric-label">이미 소장 중</div><div class="metric-value" style="color:#D97706;">{owned_count:,}권</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">평균 이용기대율(EUI)</div><div class="metric-value" style="color:#7C3AED;">{avg_eui:.1f}점</div></div>', unsafe_allow_html=True)
     with m_col4:
-        st.markdown(f'<div class="metric-card"><div class="metric-label">예상 실구입가 ({100-discount_rate_pct}%)</div><div class="metric-value" style="color:#059669;">{total_est_price:,}원</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">이미 소장 중</div><div class="metric-value" style="color:#D97706;">{owned_count:,}권</div></div>', unsafe_allow_html=True)
     with m_col5:
+        st.markdown(f'<div class="metric-card"><div class="metric-label">예상 실구입가 ({100-discount_rate_pct}%)</div><div class="metric-value" style="color:#059669;">{total_est_price:,}원</div></div>', unsafe_allow_html=True)
+    with m_col6:
         color = "#DC2626" if budget_usage > 100 else "#2563EB"
         st.markdown(f'<div class="metric-card"><div class="metric-label">예산 집행률</div><div class="metric-value" style="color:{color};">{budget_usage:.1f}%</div></div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # 2. 통계 시각화 및 액션 탭
-    tab_list, tab_stats = st.tabs(["📑 수서 도서 목록 및 발주 관리", "📊 KDC 분야별 분포 및 분석"])
+    tab_list, tab_stats = st.tabs(["📑 수서 도서 목록 및 발주 관리", "📊 KDC 분야별 분포 및 EUI 분석"])
 
     with tab_list:
         top_bar_col1, top_bar_col2, top_bar_col3 = st.columns([2.5, 1.2, 1.3])
         with top_bar_col1:
             active_src = st.session_state.get("active_source", current_source_name)
-            st.subheader(f"📚 선정 수서 목록 ({active_src} 서지 연동)")
+            st.subheader(f"📚 선정 수서 목록 ({active_src} & EUI v2.0 연동)")
         with top_bar_col2:
             if st.button("🔍 소장여부 실시간 재조회", use_container_width=True, help="정보나루 API를 병렬 호출하여 목록 전체의 실시간 소장 여부를 빠르게 다시 확인합니다."):
                 with st.spinner("🔍 정보나루 API 병렬 소장여부 확인 중..."):
@@ -377,7 +446,7 @@ else:
             st.download_button(
                 label="📥 엑셀 발주서 다운로드",
                 data=excel_bytes,
-                file_name=f"{active_src}_신간_수서발주목록_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                file_name=f"{active_src}_v2.0_수서발주목록_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
                 use_container_width=True
@@ -386,6 +455,8 @@ else:
         # 데이터 에디터 컬럼 설정
         col_config = {
             "선정": st.column_config.CheckboxColumn("발주선정", help="체크 시 발주 목록에 포함됩니다."),
+            "EUI점수": st.column_config.NumberColumn("이용기대율(EUI)", format="%.1f점", help="서점 판매지수, 전국 대출건수, 타겟층 대출, 급상승 트렌드를 종합 연산한 기대율 점수"),
+            "추천사유": st.column_config.TextColumn("추천 사유 뱃지", width="medium"),
             "소장여부": st.column_config.TextColumn("도서관 소장", help="정보나루 API 또는 업로드된 소장목록 기준"),
             "KDC분류": st.column_config.TextColumn("KDC 분야", width="medium"),
             "도서명": st.column_config.TextColumn("도서명", width="large"),
@@ -402,9 +473,8 @@ else:
         if "알라딘URL" in df.columns:
             col_config["알라딘URL"] = st.column_config.LinkColumn("알라딘 상세", display_text="보기")
 
-        # 판매지수가 바로 보이도록 최적화된 컬럼 배치 순서 지정
         desired_order = [
-            "선정", "소장여부", "KDC분류", "도서명", "저자", "출판사", 
+            "선정", "EUI점수", "추천사유", "소장여부", "KDC분류", "도서명", "저자", "출판사", 
             "판매지수", "정가", "추정실구입가", "출간일"
         ]
         if "예스24URL" in df.columns:
@@ -446,4 +516,4 @@ else:
 
 # 하단 푸터
 st.markdown("---")
-st.caption("💡 본 시스템은 YES24 Open API 및 도서관 정보나루 API 데이터를 활용하여 도서관 수서 업무를 지원합니다.")
+st.caption("💡 본 시스템은 YES24 Open API, 알라딘 TTB Open API 및 도서관 정보나루 빅데이터 API를 활용한 v2.0 지능형 수서 솔루션입니다.")

@@ -296,10 +296,15 @@ class Yes24AcquisitionManager:
         discount_rate: float = 0.10,
         lib_code: str = "",
         owned_isbns_set: set = None,
-        auto_exclude_owned: bool = True
+        auto_exclude_owned: bool = True,
+        target_loan_map: dict = None,
+        trend_loan_map: dict = None,
+        eui_weights: dict = None,
+        target_label: str = "",
+        allow_steady_sellers: bool = True
     ) -> pd.DataFrame:
         """
-        수집된 예스24 원본 도서 목록을 필터링, KDC 분류, 소장 여부 확인 및 예산 계산을 거쳐 DataFrame으로 정제
+        수집된 예스24 원본 도서 목록을 필터링, KDC 분류, 소장 여부 확인 및 v2.0 이용기대율(EUI) 점수 계산을 거쳐 DataFrame으로 정제
         """
         if exclude_keywords is None:
             exclude_keywords = self.DEFAULT_EXCLUDE_KEYWORDS
@@ -307,6 +312,12 @@ class Yes24AcquisitionManager:
             exclude_isbns = set()
         if owned_isbns_set is None:
             owned_isbns_set = set()
+        if target_loan_map is None:
+            target_loan_map = {}
+        if trend_loan_map is None:
+            trend_loan_map = {}
+        if eui_weights is None:
+            eui_weights = {"sales": 0.35, "loans": 0.25, "target": 0.25, "trend": 0.15}
 
         processed = []
         seen_isbns = set()
@@ -325,14 +336,11 @@ class Yes24AcquisitionManager:
             goods_sort_nm = item.get("goodsSortNm", "")
             raw_pub_date = item.get("publishDate", "")
             pub_date = self.format_pub_date(raw_pub_date)
+            sales_point = int(item.get("salePoint") or 0)
 
             # 키워드 필터링
             full_text = f"{title} {goods_sort_nm}"
             if any(k.lower() in full_text.lower() for k in exclude_keywords):
-                continue
-
-            # 출간일 필터링
-            if min_pub_date and pub_date and pub_date < min_pub_date:
                 continue
 
             # 품절/절판 도서 필터링
@@ -340,8 +348,21 @@ class Yes24AcquisitionManager:
             if item_status not in ["판매중", "예약판매", ""]:
                 continue
 
+            # 출간일 조건 체크 (단, 판매지수/대출율 우수 도서는 스테디셀러 예외 허용)
+            is_high_perf = (
+                sales_point >= 50000 or
+                isbn13 in target_loan_map or
+                isbn13 in trend_loan_map
+            )
+            is_older_than_limit = False
+            if min_pub_date and pub_date and pub_date < min_pub_date:
+                if allow_steady_sellers and is_high_perf:
+                    is_older_than_limit = True
+                else:
+                    continue
+
             seen_isbns.add(isbn13)
-            candidate_items.append((isbn13, item, pub_date))
+            candidate_items.append((isbn13, item, pub_date, is_older_than_limit))
 
         # 정보나루 소장 여부 병렬 확인
         ownership_map = {}
@@ -352,17 +373,17 @@ class Yes24AcquisitionManager:
                 return isbn, self.check_naru_book_exist(lib_code, isbn)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-                futures = [executor.submit(check_item, isbn) for isbn, _, _ in candidate_items]
+                futures = [executor.submit(check_item, isbn) for isbn, _, _, _ in candidate_items]
                 for future in concurrent.futures.as_completed(futures):
                     isbn, is_owned = future.result()
                     ownership_map[isbn] = is_owned
 
             self._save_cache(self.owned_cache, self.owned_cache_path)
         else:
-            for isbn, _, _ in candidate_items:
+            for isbn, _, _, _ in candidate_items:
                 ownership_map[isbn] = (isbn in owned_isbns_set)
 
-        for rank_idx, (isbn13, item, pub_date) in enumerate(candidate_items, start=1):
+        for rank_idx, (isbn13, item, pub_date, is_older_than_limit) in enumerate(candidate_items, start=1):
             is_owned = ownership_map.get(isbn13, False)
             if is_owned and auto_exclude_owned:
                 continue
@@ -386,14 +407,57 @@ class Yes24AcquisitionManager:
             if raw_sale_point is not None and int(raw_sale_point) > 0:
                 sales_point = int(raw_sale_point)
             else:
-                # 판매지수 미제공 도서의 경우 순위 기반 환산 지수 적용
                 sales_point = max(100, 100000 - (sort_order * 1000))
 
             kdc_code, kdc_name = self.infer_kdc(category_name, title, goods_sort_nm)
 
+            # --- v2.0 이용기대율(EUI: Expected Utilization Index) 점수 계산 ---
+            norm_sales = min(sales_point / 50000.0, 1.0) * 100.0
+
+            target_info = target_loan_map.get(isbn13, {})
+            target_rank = target_info.get("ranking", 0)
+            target_loan_cnt = target_info.get("loan_count", 0)
+            target_score = max(0.0, (1.0 - (target_rank / 300.0)) * 100.0) if target_rank > 0 else 0.0
+
+            trend_info = trend_loan_map.get(isbn13, {})
+            trend_rank = trend_info.get("ranking", 0)
+            trend_score = max(0.0, (1.0 - (trend_rank / 200.0)) * 100.0) if trend_rank > 0 else 0.0
+
+            norm_loans = min(target_loan_cnt / 100.0, 1.0) * 100.0 if target_loan_cnt > 0 else (norm_sales * 0.5)
+
+            w_s = eui_weights.get("sales", 0.35)
+            w_l = eui_weights.get("loans", 0.25)
+            w_ta = eui_weights.get("target", 0.25)
+            w_tr = eui_weights.get("trend", 0.15)
+
+            eui_score = round(
+                (w_s * norm_sales) + 
+                (w_l * norm_loans) + 
+                (w_ta * target_score) + 
+                (w_tr * trend_score), 
+                1
+            )
+
+            # 추천 사유 뱃지 생성
+            badges = []
+            if is_older_than_limit:
+                badges.append("⭐ 스테디셀러")
+            if trend_rank > 0:
+                badges.append("🔥 급상승")
+            if target_rank > 0:
+                badges.append(f"👨‍👩‍👧 {target_label or '타겟'}추천")
+            if sales_point >= 100000 or target_loan_cnt >= 50:
+                badges.append("📚 인기대출")
+            if not badges:
+                badges.append("📖 일반추천")
+
+            recommend_tag = " | ".join(badges)
+
             processed.append({
                 "선정": not is_owned,
                 "소장여부": "소장중" if is_owned else "미소장",
+                "EUI점수": eui_score,
+                "추천사유": recommend_tag,
                 "KDC코드": kdc_code,
                 "KDC분류": kdc_name,
                 "도서명": title,
@@ -410,7 +474,9 @@ class Yes24AcquisitionManager:
 
         df = pd.DataFrame(processed)
         if not df.empty:
-            df = df.sort_values(by="판매지수", ascending=False).reset_index(drop=True)
+            df = df.sort_values(by=["EUI점수", "판매지수"], ascending=[False, False]).reset_index(drop=True)
+
+        return df
 
         return df
 
@@ -494,7 +560,7 @@ class Yes24AcquisitionManager:
         selected_df = df[df["선정"] == True].copy() if "선정" in df.columns else df.copy()
 
         cols_to_export = [
-            "KDC코드", "KDC분류", "도서명", "저자", "출판사", "출간일", 
+            "EUI점수", "추천사유", "KDC코드", "KDC분류", "도서명", "저자", "출판사", "출간일", 
             "정가", "추정실구입가", "소장여부", "ISBN13", "판매지수", "카테고리"
         ]
         available_cols = [c for c in cols_to_export if c in selected_df.columns]

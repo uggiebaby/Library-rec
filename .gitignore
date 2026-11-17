@@ -11,9 +11,14 @@ __pycache__/
 # Environment variables
 .env
 
+# Data caches
+data/*.json
+
 # MacOS / OS metadata
 .DS_Store
 
 # Temporary files
 temp_extract/
 *.zip
+Library-rec/
+Push_To_GitHub.*

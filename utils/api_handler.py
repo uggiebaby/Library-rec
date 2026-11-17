@@ -9,6 +9,19 @@ from datetime import datetime
 class LibraryAPIHandler:
     # --- 공통 상수 관리 ---
     REGION_OPTIONS = {"전체": "", "서울": "11", "경기": "31", "광주": "24", "부산": "21", "인천": "23", "대구": "22", "경기도교육청": "GOE"}
+    AGE_OPTIONS = {
+        "전체 연령": "",
+        "영유아 (0~5세)": "0",
+        "유아 (6~7세)": "6",
+        "초등 (8~13세)": "8",
+        "중고등 (14~19세)": "14",
+        "20대": "20",
+        "30대": "30",
+        "40대": "40",
+        "50대": "50",
+        "60대 이상": "60"
+    }
+    GENDER_OPTIONS = {"전체 성별": "", "남성": "0", "여성": "1"}
     GOE_LIBS = {
         "141004": "과천", "141141": "경기평생", "141010": "중앙", "141008": "성남", 
         "141130": "화성", "141106": "의정부", "141009": "평택", "141006": "김포", 
@@ -34,10 +47,14 @@ class LibraryAPIHandler:
         self.owned_cache_path = "data/owned_cache.json"
         self.bench_cache_path = "data/bench_cache.json"
         self.my_collection_path = "data/my_collection.json"
+        self.target_cache_path = "data/target_cache.json"
+        self.trend_cache_path = "data/trend_cache.json"
         
         self.kdc_cache = self._load_cache(self.cache_path)
         self.owned_cache = self._load_cache(self.owned_cache_path)
         self.bench_cache = self._load_cache(self.bench_cache_path)
+        self.target_cache = self._load_cache(self.target_cache_path)
+        self.trend_cache = self._load_cache(self.trend_cache_path)
         
         # 로컬 장서 DB 로드 (ISBN 세트로 변환)
         coll_data = self._load_cache(self.my_collection_path)
@@ -82,6 +99,86 @@ class LibraryAPIHandler:
         if end_dt: params["endDt"] = end_dt
         resp = self._safe_get(f"{self.naru_base_url}/loanItemSrch", params)
         return resp.json().get("response", {}).get("docs", []) if resp else []
+
+    def fetch_target_demographic_loans(self, age="", gender="", dtl_region="", page_size=300):
+        """특정 연령대 및 성별 대출 상위 도서 일괄 수집 (로컬 캐시 24시간 적용)"""
+        cache_key = f"target_{age}_{gender}_{dtl_region}_{page_size}"
+        if cache_key in self.target_cache:
+            return self.target_cache[cache_key]
+
+        params = {
+            "authKey": self.info_naru_key,
+            "format": "json",
+            "pageSize": page_size
+        }
+        if age: params["age"] = age
+        if gender: params["gender"] = gender
+        if dtl_region: params["dtl_region"] = dtl_region
+
+        resp = self._safe_get(f"{self.naru_base_url}/loanItemSrch", params, timeout=15)
+        if not resp:
+            return {}
+
+        result = {}
+        try:
+            docs = resp.json().get("response", {}).get("docs", [])
+            for idx, item_wrapper in enumerate(docs, 1):
+                doc = item_wrapper.get("doc", {})
+                isbn = self.clean_isbn(doc.get("isbn13"))
+                if not isbn: continue
+                loan_cnt = int(doc.get("loan_count", 0)) if doc.get("loan_count") is not None else 0
+                result[isbn] = {
+                    "ranking": idx,
+                    "loan_count": loan_cnt,
+                    "title": doc.get("bookname", ""),
+                    "authors": doc.get("authors", "")
+                }
+        except Exception:
+            result = {}
+
+        if result:
+            self.target_cache[cache_key] = result
+            self._save_cache(self.target_cache, self.target_cache_path)
+        return result
+
+    def fetch_hot_trends(self, search_dt=None, page_size=200):
+        """공공도서관 급상승 대출 도서 일괄 수집 (로컬 캐시 적용)"""
+        cache_key = f"trend_{search_dt or 'today'}_{page_size}"
+        if cache_key in self.trend_cache:
+            return self.trend_cache[cache_key]
+
+        params = {
+            "authKey": self.info_naru_key,
+            "format": "json"
+        }
+        if search_dt: params["searchDt"] = search_dt
+
+        resp = self._safe_get(f"{self.naru_base_url}/hotTrend", params, timeout=15)
+        if not resp:
+            return {}
+
+        result = {}
+        try:
+            results = resp.json().get("response", {}).get("results", [])
+            for res_item in results:
+                docs = res_item.get("result", {}).get("docs", [])
+                for idx, item_wrapper in enumerate(docs, 1):
+                    doc = item_wrapper.get("doc", {})
+                    isbn = self.clean_isbn(doc.get("isbn13"))
+                    if not isbn: continue
+                    diff = int(doc.get("difference", 0)) if doc.get("difference") is not None else 0
+                    result[isbn] = {
+                        "ranking": idx,
+                        "difference": diff,
+                        "title": doc.get("bookname", "")
+                    }
+        except Exception:
+            result = {}
+
+        if result:
+            self.trend_cache[cache_key] = result
+            self._save_cache(self.trend_cache, self.trend_cache_path)
+        return result
 
     def check_book_existence(self, lib_code, isbn13):
         isbn = self.clean_isbn(isbn13)
