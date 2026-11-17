@@ -100,6 +100,41 @@ default_yes24_key = os.getenv("YES24_API_KEY", "yk_live_c811cfa89b848ebcea3aa451
 default_naru_key = os.getenv("INFO_NARU_KEY", "")
 default_lib_code = os.getenv("DEFAULT_LIB_CODE", "141005")
 
+# --- 🔒 비밀번호(PIN) 잠금 인증 시스템 ---
+def check_password():
+    correct_pin = os.getenv("APP_PASSWORD", "1234")
+    
+    if st.session_state.get("authenticated", False):
+        return True
+
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col_l, col_m, col_r = st.columns([1, 1.2, 1])
+    with col_m:
+        st.markdown("""
+        <div style="background:#FFFFFF; padding:2rem; border-radius:16px; border:1px solid #E2E8F0; box-shadow:0 10px 25px -5px rgba(0,0,0,0.1); text-align:center; margin-bottom:1.5rem;">
+            <div style="font-size:3rem; margin-bottom:0.5rem;">🔒</div>
+            <h2 style="margin:0 0 0.5rem 0; color:#0F172A; font-size:1.5rem; font-weight:700;">도서관 수서 시스템 인증</h2>
+            <p style="color:#64748B; font-size:0.95rem; margin:0;">관계자 전용 시스템입니다. 사서 접속 비밀번호(PIN)를 입력해주세요.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.form("pin_login_form"):
+            pin_input = st.text_input("접속 비밀번호 (PIN)", type="password", placeholder="비밀번호 입력...", label_visibility="collapsed")
+            submit_btn = st.form_submit_button("🚀 시스템 접속하기", use_container_width=True, type="primary")
+            
+            if submit_btn:
+                if pin_input.strip() == str(correct_pin).strip():
+                    st.session_state["authenticated"] = True
+                    st.success("✅ 인증 성공! 시스템에 접속합니다...")
+                    time.sleep(0.3)
+                    st.rerun()
+                else:
+                    st.error("❌ 비밀번호가 올바르지 않습니다. 다시 입력해주세요.")
+    return False
+
+if not check_password():
+    st.stop()
+
 # Header
 st.markdown("""
 <div class="main-header">
@@ -269,6 +304,11 @@ with st.sidebar:
         st.session_state.raw_books = []
         st.success("캐시가 초기화되었습니다.")
         time.sleep(0.3)
+        st.rerun()
+
+    st.markdown("---")
+    if st.button("🔒 로그아웃 (화면 잠금)", use_container_width=True):
+        st.session_state["authenticated"] = False
         st.rerun()
 
 # --- 메인 로직 처리 ---
