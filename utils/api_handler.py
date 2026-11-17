@@ -180,6 +180,14 @@ class LibraryAPIHandler:
             self._save_cache(self.trend_cache, self.trend_cache_path)
         return result
 
+    def fetch_target_popular_books(self, age_code="", gender_code="", page_size=300):
+        """호환성을 위한 별칭 메서드"""
+        return self.fetch_target_demographic_loans(age=age_code, gender=gender_code, page_size=page_size)
+
+    def fetch_hot_trend_books(self, page_size=200):
+        """호환성을 위한 별칭 메서드"""
+        return self.fetch_hot_trends(page_size=page_size)
+
     def check_book_existence(self, lib_code, isbn13):
         isbn = self.clean_isbn(isbn13)
         # 1순위: 로컬 전체 장서 DB 확인 (가장 빠름)

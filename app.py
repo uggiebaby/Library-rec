@@ -296,11 +296,11 @@ if fetch_btn:
                 st.write(f"👥 2단계: 도서관정보나루 '{target_age_label} / {target_gender_label}' 대출 빅데이터 연동...")
                 target_code = LibraryAPIHandler.AGE_OPTIONS.get(target_age_label, "20")
                 gender_code = LibraryAPIHandler.GENDER_OPTIONS.get(target_gender_label, "0")
-                target_loan_map = api_handler.fetch_target_popular_books(age_code=target_code, gender_code=gender_code)
+                target_loan_map = api_handler.fetch_target_demographic_loans(age=target_code, gender=gender_code)
 
                 if use_hot_trend:
                     st.write("🔥 3단계: 최근 공공도서관 대출 급상승(라이징) 트렌드 분석...")
-                    trend_loan_map = api_handler.fetch_hot_trend_books()
+                    trend_loan_map = api_handler.fetch_hot_trends()
 
             st.write("⚖️ 4단계: 이용기대율(EUI) 스코어링 및 소장 여부 병렬 검증...")
             target_label_str = f"{target_age_label[:3]}대 {target_gender_label[:1]}"
