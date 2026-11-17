@@ -251,7 +251,7 @@ with st.sidebar:
 
     with st.expander("🚫 제외 키워드 & ISBN 관리", expanded=False):
         exclude_kw_str = st.text_area(
-            "제외할 키워드 (쉼표 구분)",
+            "제외할 키워드 (쉼표 구분, 도서명 및 YES24 카테고리 분류에 동시 적용)",
             value=", ".join(manager.DEFAULT_EXCLUDE_KEYWORDS),
             height=100
         )
@@ -408,6 +408,7 @@ else:
             "추천사유": st.column_config.TextColumn("추천 사유 뱃지", width="medium"),
             "소장여부": st.column_config.TextColumn("도서관 소장", help="정보나루 API 또는 업로드된 소장목록 기준"),
             "KDC분류": st.column_config.TextColumn("KDC 분야", width="medium"),
+            "YES24분류": st.column_config.TextColumn("YES24 카테고리", width="medium", help="YES24 원본 분야 분류"),
             "도서명": st.column_config.TextColumn("도서명", width="large"),
             "저자": st.column_config.TextColumn("저자", width="medium"),
             "출판사": st.column_config.TextColumn("출판사", width="medium"),
@@ -420,7 +421,7 @@ else:
         }
 
         desired_order = [
-            "선정", "EUI점수", "추천사유", "소장여부", "KDC분류", "도서명", "저자", "출판사", 
+            "선정", "EUI점수", "추천사유", "소장여부", "KDC분류", "YES24분류", "도서명", "저자", "출판사", 
             "판매지수", "정가", "추정실구입가", "출간일", "예스24URL", "ISBN13"
         ]
         final_column_order = [c for c in desired_order if c in df.columns]

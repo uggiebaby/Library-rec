@@ -31,8 +31,9 @@ class Yes24AcquisitionManager:
     # 기본 제외 키워드
     DEFAULT_EXCLUDE_KEYWORDS = [
         "수험서", "문제집", "자격증", "기출", "워크북", "참고서", "모의고사", 
-        "그래픽노블", "라이트노벨", "컬러링북", "학습지", "잡지", "연속간행물", 
-        "큰글자책", "큰글씨책", "대학교재", "토익", "토플", "오픽", "시험", "답안", "세트"
+        "초등참고서", "중등참고서", "고등참고서", "학습지",
+        "그래픽노블", "라이트노벨", "만화", "컬러링북", "잡지", "연속간행물", 
+        "큰글자책", "큰글씨책", "대학교재", "토익", "토플", "오픽", "시험", "답안", "세트", "전집"
     ]
 
     # 예스24 국내도서(001) 주요 분야 카테고리 ID
@@ -334,13 +335,17 @@ class Yes24AcquisitionManager:
 
             title = item.get("title", "").strip()
             goods_sort_nm = item.get("goodsSortNm", "")
+            category_name = goods_sort_nm.replace("국내도서-", "") if goods_sort_nm else ""
             raw_pub_date = item.get("publishDate", "")
             pub_date = self.format_pub_date(raw_pub_date)
             sales_point = int(item.get("salePoint") or 0)
 
-            # 키워드 필터링
-            full_text = f"{title} {goods_sort_nm}"
-            if any(k.lower() in full_text.lower() for k in exclude_keywords):
+            # 키워드 필터링: 도서명뿐만 아니라 YES24 카테고리/분류명(goods_sort_nm, categoryName)에도 제외 키워드 엄격 적용
+            clean_exclude_kws = [k.strip().lower() for k in exclude_keywords if k and k.strip()]
+            title_lower = title.lower()
+            category_lower = f"{goods_sort_nm} {category_name} {item.get('categoryName', '')}".lower()
+            
+            if any(kw in title_lower or kw in category_lower for kw in clean_exclude_kws):
                 continue
 
             # 품절/절판 도서 필터링
@@ -460,6 +465,7 @@ class Yes24AcquisitionManager:
                 "추천사유": recommend_tag,
                 "KDC코드": kdc_code,
                 "KDC분류": kdc_name,
+                "YES24분류": category_name or goods_sort_nm,
                 "도서명": title,
                 "저자": author,
                 "출판사": publisher,
@@ -468,7 +474,6 @@ class Yes24AcquisitionManager:
                 "추정실구입가": estimated_price,
                 "판매지수": sales_point,
                 "ISBN13": isbn13,
-                "카테고리": category_name,
                 "예스24URL": item.get("link", "")
             })
 
@@ -560,8 +565,8 @@ class Yes24AcquisitionManager:
         selected_df = df[df["선정"] == True].copy() if "선정" in df.columns else df.copy()
 
         cols_to_export = [
-            "EUI점수", "추천사유", "KDC코드", "KDC분류", "도서명", "저자", "출판사", "출간일", 
-            "정가", "추정실구입가", "소장여부", "ISBN13", "판매지수", "카테고리"
+            "EUI점수", "추천사유", "KDC코드", "KDC분류", "YES24분류", "도서명", "저자", "출판사", "출간일", 
+            "정가", "추정실구입가", "소장여부", "ISBN13", "판매지수"
         ]
         available_cols = [c for c in cols_to_export if c in selected_df.columns]
         export_df = selected_df[available_cols]
